@@ -19,3 +19,11 @@ Do I plan on editing or updating this? Probably never. It's a local first tool, 
 4. click load unpacked. point it torwards the folder of the now unpacked extension
 
 done : )
+
+# personal biz.
+
+theres not many things i can think of that id love to see implemented, but also im not gonna beg the internet for free code, cause who am i? but, being a furry, theres probably better people out there who are REALLY good at this sorta stuff. im just an ideas guy, i cant claim to call the shots.
+
+## also? weird psuedo disclaimer
+
+i didnt personally vet the code, i do kinda know the person who coded this somewhat dabbles in dealing with alot of AI stuff, though i did personally ask that they dont vibecode this entire thing for me, and try to just slap it all together, i didnt want it to be perfect anyways.
