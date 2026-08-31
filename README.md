@@ -8,3 +8,5 @@ Based on and directly inspired mostly by: [Shinigami Eyes website](https://shini
 I personally didn't do alot of the coding. I kinda just asked a friend to help me push out an idea I had been sitting on for months, gave him my scrappings of code I tried to rewrite from the original shinigami eyes, and said "have fun, i will be your personal debugging jockey". 7 hours later, we're here now I guess.
 
 Wanna change something? Feel free to, I'll merge pull requests that add features, deny em, so on so forth. I just wanted this for myself and some friends, and I'm glad to try and share it with the world.
+
+Do I plan on editing or updating this? Probably never. It's a local first tool, so unless something crazy breaks. Nah.
