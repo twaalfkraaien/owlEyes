@@ -13,9 +13,9 @@ Do I plan on editing or updating this? Probably never. It's a local first tool, 
 
 # installation.
 
-download the repository by clicking the green code button, download as zip
-extract that zip somewhere where you'll find it again.
-navigate to your browsers extensions menu. enable developer mode.
-click load unpacked. point it torwards the folder of the now unpacked extension
+1. download the repository by clicking the green code button, download as zip
+2. extract that zip somewhere where you'll find it again.
+3. navigate to your browsers extensions menu. enable developer mode.
+4. click load unpacked. point it torwards the folder of the now unpacked extension
 
 done : )
