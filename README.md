@@ -10,3 +10,12 @@ I personally didn't do alot of the coding. I kinda just asked a friend to help m
 Wanna change something? Feel free to, I'll merge pull requests that add features, deny em, so on so forth. I just wanted this for myself and some friends, and I'm glad to try and share it with the world.
 
 Do I plan on editing or updating this? Probably never. It's a local first tool, so unless something crazy breaks. Nah.
+
+# installation.
+
+download the repository by clicking the green code button, download as zip
+extract that zip somewhere where you'll find it again.
+navigate to your browsers extensions menu. enable developer mode.
+click load unpacked. point it torwards the folder of the now unpacked extension
+
+done : )
