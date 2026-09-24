@@ -13,19 +13,19 @@
     <nav>
         <button data-tab="labels" class="active">Labels</button>
         <button data-tab="databases">Databases</button>
-        <button data-tab="gists">Gist Subscriptions</button>
-        <button data-tab="uploads">Gist Uploads</button>
-        <button data-tab="import">Import / Export</button>
+        <button data-tab="gists">Gist Settings</button>
+        <button data-tab="import">Import & Export</button>
     </nav>
 
     <main>
         <!-- LABELS -->
         <section id="tab-labels" class="tab active">
-            <h2>Labels &amp; colors</h2>
+            <h2>Labels &amp; Colors</h2>
+            <p class="muted"></p>
             <div id="label-list"></div>
             <div class="add-row">
-                <input id="new-label-id" placeholder="id (e.g. scam)">
-                <input id="new-label-name" placeholder="name (e.g. Scam)">
+                <input id="new-label-id" placeholder="Internal Name (e.g. scam)">
+                <input id="new-label-name" placeholder="Visual Name (e.g. Scam)">
                 <input id="new-label-color" type="color" value="#d64545">
                 <button id="add-label">Add</button>
             </div>
@@ -33,79 +33,94 @@
 
         <!-- DATABASES -->
         <section id="tab-databases" class="tab">
-            <div class="db-header">
-                <h2>Local database</h2>
-                <span id="db-count" class="badge"></span>
-            </div>
-            <p class="muted">Your local database stores every tagged username/URL/ID and is saved on this device. Tag things from here, the popup, or by right-clicking a link.</p>
+            <div class="split split-db" id="split-db">
+                <div class="split-col">
+                    <div class="db-header">
+                        <h2>Local Database</h2>
+                        <span id="db-count" class="badge"></span>
+                    </div>
+                    <p class="muted">Your local database stores every tagged username/URL/ID and is saved on this device. Tag things from here, the popup, or by right-clicking a link.</p>
 
-            <div class="add-item-form">
-                <input id="db-new-id" placeholder="Identifier to tag (e.g. reddit.com/user/foo, hello, https://…)">
-                <select id="db-new-label">
-                    <option value="" disabled selected>Choose a label…</option>
-                </select>
-                <button id="db-add" class="primary">Add &amp; save</button>
-            </div>
+                    <div class="add-item-form">
+                        <input id="db-new-id" placeholder="Identifier to tag (e.g. reddit.com/user/foo, hello, https://…)">
+                        <select id="db-new-label">
+                            <option value="" disabled selected>Choose a label…</option>
+                        </select>
+                        <button id="db-add" class="primary">Add &amp; save</button>
+                    </div>
 
-            <div class="controls">
-                <input id="db-search" placeholder="Search saved items…">
-                <select id="db-filter-label">
-                    <option value="" selected>All labels</option>
-                </select>
-                <button id="db-clear" class="danger">Clear all</button>
-            </div>
+                    <div class="controls">
+                        <input id="db-search" placeholder="Search saved items…">
+                        <select id="db-filter-label">
+                            <option value="" selected>All labels</option>
+                        </select>
+                        <button id="db-clear" class="danger">Clear all</button>
+                    </div>
 
-            <div id="item-list"></div>
+                    <div id="item-list"></div>
+                </div>
+
+                <div class="split-col" id="ignored-col">
+                    <div class="ignored-section">
+                        <h3>Ignored <span id="ignored-count" class="badge"></span></h3>
+                        <p class="muted">These identifiers were removed locally and won't be re-added when gist subscriptions sync.</p>
+                        <div id="ignored-list"></div>
+                    </div>
+                </div>
+            </div>
         </section>
 
-        <!-- GISTS -->
+        <!-- GISTS (uploads left, subscriptions right) -->
         <section id="tab-gists" class="tab">
-            <h2>GitHub gist subscriptions</h2>
-            <label class="toggle-row">
-                <input type="checkbox" id="sync-enabled">
-                <span>Sync subscriptions automatically (every ~6 hours)</span>
-            </label>
-            <div class="add-row">
-                <input id="gist-url" placeholder="https://gist.github.com/user/abcdef...">
-                <button id="add-gist">Subscribe</button>
-            </div>
-            <div id="gist-list"></div>
-            <button id="refresh-gists">Refresh all now</button>
-        </section>
+            <div class="split">
+                <div class="split-col">
+                    <h2>Automatic Gist Uploads</h2>
+                    <p class="muted">Pick a group of labels, point it at one of your gists, and owlEyes pushes the items tagged with those labels to it automatically whenever that tag group changes.</p>
 
-        <!-- UPLOADS -->
-        <section id="tab-uploads" class="tab">
-            <h2>Automatic gist uploads</h2>
-            <p class="muted">Pick a group of labels, point it at one of your gists, and owlEyes pushes the items tagged with those labels to it automatically whenever that tag group changes.</p>
+                    <div class="token-row">
+                        <label for="gh-token">GitHub personal access token</label>
+                        <input id="gh-token" type="password" placeholder="github_pat_... / ghp_... (requires gist scope)">
+                        <button id="save-token">Save token</button>
+                    </div>
+                    <p class="muted">Used only to update your own gists. Create one at <span class="mono">github.com/settings/tokens</span> (fine-grained, read/write access to your gists). Stored in this browser's extension storage.</p>
 
-            <div class="token-row">
-                <label for="gh-token">GitHub personal access token</label>
-                <input id="gh-token" type="password" placeholder="github_pat_... / ghp_... (requires gist scope)">
-                <button id="save-token">Save token</button>
-            </div>
-            <p class="muted">Used only to update your own gists. Create one at <span class="mono">github.com/settings/tokens</span> (fine-grained, read/write access to your gists). Stored in this browser's extension storage.</p>
+                    <h3>Add an upload</h3>
+                    <div class="add-row">
+                        <input id="upload-name" type="text" placeholder="Name (e.g. Scam DB)">
+                        <input id="upload-url" type="url" placeholder="https://gist.github.com/user/abcdef...">
+                        <input id="upload-filename" type="text" value="owleyes.json" placeholder="filename.json">
+                    </div>
+                    <div class="upload-labels">
+                        <p class="muted">Labels to include in this upload</p>
+                        <div id="upload-label-list"></div>
+                    </div>
+                    <button id="add-upload" class="primary" disabled>Add upload</button>
 
-            <h3>Add an upload</h3>
-            <div class="add-row">
-                <input id="upload-name" type="text" placeholder="Name (e.g. Scam DB)">
-                <input id="upload-url" type="url" placeholder="https://gist.github.com/user/abcdef...">
-                <input id="upload-filename" type="text" value="owleyes.json" placeholder="filename.json">
-            </div>
-            <div class="upload-labels">
-                <p class="muted">Labels to include in this upload</p>
-                <div id="upload-label-list"></div>
-            </div>
-            <button id="add-upload" class="primary" disabled>Add upload</button>
+                    <h3>Your Uploads</h3>
+                    <div id="upload-list"></div>
+                    <button id="push-all">Push all now</button>
+                </div>
 
-            <h3>Your uploads</h3>
-            <div id="upload-list"></div>
-            <button id="push-all">Push all now</button>
+                <div class="split-col">
+                    <h2>GitHub Gist Subscriptions</h2>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="sync-enabled">
+                        <span>Sync subscriptions automatically (every ~6 hours)</span>
+                    </label>
+                    <div class="add-row">
+                        <input id="gist-url" placeholder="https://gist.github.com/user/abcdef...">
+                        <button id="add-gist">Subscribe</button>
+                    </div>
+                    <div id="gist-list"></div>
+                    <button id="refresh-gists">Refresh all now</button>
+                </div>
+            </div>
         </section>
 
         <!-- IMPORT / EXPORT -->
         <section id="tab-import" class="tab">
             <h2>Import / Export</h2>
-            <p>Export the local database as JSON, or import one. To share with others, host an export as a gist and subscribe to it — gist data merges into your local DB and never overwrites your own entries. Exports carry label colors, and imports apply them by default.</p>
+            <p class="muted">Export the local database as JSON, or import one. To share with others, host an export as a gist and subscribe to it — gist data merges into your local DB and never overwrites your own entries. Exports carry label colors, and imports apply them by default.</p>
 
             <div class="export-select">
                 <h3>Export specific labels</h3>

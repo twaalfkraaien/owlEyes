@@ -41,7 +41,11 @@ nav button.active {
 
 main {
     padding: 24px 28px;
-    max-width: 860px;
+    max-width: 1500px;
+}
+
+#tab-labels {
+    max-width: 900px;
 }
 
 .tab { display: none; }
@@ -184,6 +188,55 @@ input[type=text], input[type=url] {
 
 .item-row .item-id { word-break: break-all; }
 .item-row .item-id span { font-family: monospace; }
+
+.row-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+/* Gists tab: uploads (left) and subscriptions (right). */
+.split {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
+}
+
+.split-col {
+    min-width: 0;
+}
+
+/* Databases tab: the ignore list is always shown to the right of the DB. */
+.split-db {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}
+
+@media (max-width: 900px) {
+    .split,
+    .split-db { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ignored-section {
+    background: #fbfbfd;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 12px 14px;
+}
+
+.ignored-section h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 4px;
+    font-size: 14px;
+}
+
+.ignored-row {
+    background: #fbfbfd;
+}
+
+.ignored-row .item-id { color: #999; }
 
 .label-cell {
     display: flex;

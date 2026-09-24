@@ -1,16 +1,13 @@
-// owlEyes content script
-// Scans the page for identifiers (usernames, URLs, domains, subreddits) and
-// highlights them according to the user's label colors.
+// owlEyes content script — scans pages for identifiers and highlights them
+// with the user's label colors.
 
 let enabled = true;
 let disabledHosts = [];
 let allItems = {};
 let allLabels = [];
 
-// Per-scan map of display-name aliases (lowercased) -> label object. Populated
-// when we match an "@handle" form and can infer the person's display name from
-// the surrounding DOM, so the display name also gets highlighted on X/Twitter
-// where handles render as display names.
+// Display-name aliases (lowercased) -> label, inferred while matching @handles
+// so names render on X/Twitter where handles show as display names.
 let displayNameMap = new Map();
 
 function hostname() {
@@ -42,17 +39,13 @@ function labelForId(labelId) {
 // Escape text for use in a regex of exact identifiers.
 function matchesForIdentifier(id) {
     const esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match when surrounded by word boundaries or common delimiters.
-    // The 'i' flag makes matching case-insensitive (item ids are stored
-    // lowercase, but page text may display any casing, e.g. @Foo).
+    // Word/delimiter boundaries; 'i' matches stored-lowercase ids against
+    // any page casing, e.g. @Foo.
     return new RegExp(`(?<![\\p{L}\\p{N}_:/@#.-])${esc}(?![\\p{L}\\p{N}_:/@#.-])`, 'giu');
 }
 
-// Several display forms of a canonical identifier, e.g. for
-// "twitter.com/foo" we also want to match the bare "@foo" handle.
-// NOTE: we deliberately do NOT match the bare "foo" word alone — that would
-// highlight any matching short word anywhere on <all_urls> (false positives).
-// The "@handle" form is specific enough to be useful without that.
+// Display forms of a canonical identifier, e.g. "twitter.com/foo" also matches
+// the bare "@foo". The bare word alone isn't matched (false-positive risk).
 function identifierForms(id) {
     const forms = [id];
     if (id.includes('/')) {
@@ -64,11 +57,8 @@ function identifierForms(id) {
     return forms;
 }
 
-// Infer a person's display name from the DOM around an "@handle" node, so we
-// can also highlight the display name on X/Twitter (where it renders the name,
-// not the handle). Looks for a sibling text node/span holding a word-like name.
-// Returns the display-name string or null. Conservative: only accepts a short
-// letter/space string that clearly isn't a handle, URL, or prompt phrase.
+// Infer a display name from the DOM around an "@handle" node (for X/Twitter).
+// Conservative: only short letter/space strings that aren't a handle/URL/prompt.
 function captureDisplayName(handleNode, bare) {
     const exclusions = /(\/|https?:|www\.|\.\.|\b(replying to|replied|from|follow|you|joined|verified)\b)/i;
     let el = handleNode.parentElement;
@@ -89,13 +79,13 @@ function captureDisplayName(handleNode, bare) {
     return null;
 }
 
-// Decide which DOM elements are "leaf" text nodes worth scanning.
+// Which text nodes are worth scanning.
 function shouldScanNode(node) {
     if (node.nodeType !== Node.TEXT_NODE) return false;
     if (!(node.parentElement instanceof HTMLElement)) return false;
     const tag = node.parentElement.tagName;
     if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' || tag === 'NOSCRIPT') return false;
-    // Don't re-wrap text that is already inside one of our highlight spans.
+    // Skip text already inside one of our own highlight spans.
     if (node.parentElement.classList && node.parentElement.classList.contains('owleyes-label')) return false;
     return true;
 }
@@ -105,7 +95,7 @@ function applyHighlights() {
 
     displayNameMap.clear();
 
-    // Build a single passing walker over text nodes.
+    // One walker pass over all text nodes.
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
             return shouldScanNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
@@ -123,16 +113,14 @@ function applyHighlights() {
         highlightTextNode(textNode);
     }
 
-    // Pass 2: highlight inferred display-name aliases (e.g. "John Smith")
-    // collected while matching @handles in Pass 1.
+    // Pass 2: highlight display-name aliases inferred during Pass 1.
     applyDisplayNames();
 }
 
 // Wraps matching spans within a text node without breaking up the DOM
 // structure for other scripts. Returns true if it modified the node.
-// Remove existing highlight spans, restoring their text content, so that a
-// re-scan can drop highlights whose labels are no longer applied. Returns the
-// number of spans unwrapped.
+// Unwrap existing highlight spans so a re-scan can drop stale highlights.
+// Returns the number of spans removed.
 function clearHighlights() {
     const spans = document.querySelectorAll('.owleyes-label');
     let count = 0;
@@ -168,8 +156,7 @@ function highlightTextNode(textNode) {
             while ((match = regex.exec(text)) !== null) {
                 fragments.push({ start: match.index, end: match.index + match[0].length, label: labelObj });
             }
-            // For an "@handle" match, try to infer the display name so that the
-            // display-name text also gets highlighted on X/Twitter.
+            // For "@handle" matches, infer the display name too.
             if (form[0] === '@' && labelObj) {
                 const disp = captureDisplayName(textNode, form.slice(1));
                 if (disp) displayNameMap.set(disp.toLowerCase(), labelObj);
@@ -181,7 +168,7 @@ function highlightTextNode(textNode) {
 
     fragments.sort((a, b) => a.start - b.start);
 
-    // Merge overlapping/adjacent ranges (keep first label).
+    // Merge overlapping/adjacent ranges.
     const merged = [];
     for (const f of fragments) {
         const last = merged[merged.length - 1];
@@ -216,10 +203,9 @@ function highlightTextNode(textNode) {
     return true;
 }
 
-// Wrap occurrences of a single display-name alias within one text node.
-// Uses a looser boundary than regular identifiers so a name directly adjacent
-// to punctuation ("John Smith.") still matches; only alphanumeric adjacency
-// ("johnsmith123", "Smithson") is rejected.
+// Wrap a display-name alias in one text node. Looser boundaries than regular
+// identifiers: a name adjacent to punctuation still matches; alphanumeric
+// adjacency ("johnsmith123") is rejected.
 function matchesForDisplayName(name) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(?<![\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'gi');
@@ -264,7 +250,7 @@ function highlightNameInNode(textNode, name, labelObj) {
     textNode.parentNode.replaceChild(frag, textNode);
 }
 
-// Highlight all inferred display-name aliases collected during Pass 1.
+// Highlight the display-name aliases collected during Pass 1.
 function applyDisplayNames() {
     if (displayNameMap.size === 0) return;
     const names = Array.from(displayNameMap.entries());   // [lower, labelObj]
@@ -295,7 +281,7 @@ function bestTextColor(hex) {
     return lum > 0.6 ? '#111111' : '#ffffff';
 }
 
-// Rebuild the scan safely. Avoid infinite loops caused by our own injected spans.
+// Rebuild the scan safely, avoiding loops from our own injected spans.
 let scanning = false;
 function scan() {
     if (scanning) return;

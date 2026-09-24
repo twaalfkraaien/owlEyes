@@ -146,15 +146,14 @@ document.getElementById('add-label').addEventListener('click', async () => {
 let dbSearch = '';
 let dbFilterLabel = '';   // label id to filter the list by; '' = show all
 
-// Update the database count badge + the add-form label picker, and rebuild
-// the label filter dropdown (keeping the current filter selection).
+// Update the count badge, add-form picker, and filter dropdown.
 async function renderDbControls() {
     await getState();
     const count = Object.keys(state.items).length;
     const badge = document.getElementById('db-count');
     badge.textContent = count === 0 ? 'Empty' : count + (count === 1 ? ' item' : ' items');
 
-    // Add-form picker: default shows the "Choose a label…" placeholder.
+    // Add-form picker: starts with a placeholder option.
     const addSelect = document.getElementById('db-new-label');
     addSelect.innerHTML = '';
     const placeholder = document.createElement('option');
@@ -168,7 +167,7 @@ async function renderDbControls() {
         addSelect.appendChild(opt);
     }
 
-    // Filter dropdown: independent of the add-form picker.
+    // Label filter dropdown.
     const filter = document.getElementById('db-filter-label');
     const prevFilter = filter.value || dbFilterLabel;
     filter.innerHTML = '';
@@ -239,7 +238,7 @@ async function renderItems() {
         idText.textContent = id;
         idCell.appendChild(idText);
 
-        // Show a color chip + dropdown so it's obvious what label is applied.
+        // Color chip + label dropdown.
         const labelCell = document.createElement('div');
         labelCell.className = 'label-cell';
         const chip = document.createElement('span');
@@ -273,7 +272,18 @@ async function renderItems() {
         });
         labelCell.append(chip, select);
 
-        const del = document.createElement('div');
+        const actions = document.createElement('div');
+        actions.className = 'row-actions';
+        const ignoreBtn = document.createElement('button');
+        ignoreBtn.textContent = 'Ignore';
+        ignoreBtn.title = 'Remove locally and never re-add from gist sync';
+        ignoreBtn.addEventListener('click', async () => {
+            if (!confirm(`Ignore "${id}"? It will be removed from the database and gist syncs won't re-add it.`)) return;
+            await send('ignoreItem', { identifier: id });
+            flashAction('Ignored "' + id + '"');
+            await Promise.all([renderItems(), renderIgnored(), renderDbControls()]);
+        });
+        actions.appendChild(ignoreBtn);
         const delBtn = document.createElement('button');
         delBtn.className = 'danger';
         delBtn.textContent = 'Remove';
@@ -282,9 +292,9 @@ async function renderItems() {
             flashAction('Removed "' + id + '"');
             await Promise.all([renderItems(), renderDbControls()]);
         });
-        del.appendChild(delBtn);
+        actions.appendChild(delBtn);
 
-        row.append(idCell, labelCell, del);
+        row.append(idCell, labelCell, actions);
         list.appendChild(row);
     }
 }
@@ -306,6 +316,46 @@ function flashAction(text) {
 
 function renderDatabasesRow() {
     return renderItems();
+}
+
+// The locally-stored ignore list: identifiers removed by the user that gist
+// syncs must not re-add. Rendered to the right of the database with
+// Unignore actions; the column stays visible even when the list is empty.
+async function renderIgnored() {
+    await getState();
+    const list = document.getElementById('ignored-list');
+    const countEl = document.getElementById('ignored-count');
+    const ignored = state.ignoredItems || [];
+    countEl.textContent = ignored.length;
+    list.innerHTML = '';
+
+    if (ignored.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'No ignored items yet. Use Ignore on an item so a gist sync won\u2019t re-add it.';
+        list.appendChild(empty);
+        return;
+    }
+
+    for (const id of ignored) {
+        const row = document.createElement('div');
+        row.className = 'ignored-row item-row';
+        const idCell = document.createElement('div');
+        idCell.className = 'item-id';
+        idCell.textContent = id;
+        const note = document.createElement('span');
+        note.className = 'muted';
+        note.textContent = 'not re-added by gist sync';
+        const un = document.createElement('button');
+        un.textContent = 'Unignore';
+        un.addEventListener('click', async () => {
+            await send('unignoreItem', { identifier: id });
+            flashAction('Unignored "' + id + '"');
+            await Promise.all([renderIgnored(), renderDbControls()]);
+        });
+        row.append(idCell, note, un);
+        list.appendChild(row);
+    }
 }
 
 document.getElementById('db-new-id').addEventListener('input', updateAddFormState);
@@ -658,16 +708,14 @@ function selectedExportLabelIds() {
     return ids;
 }
 
-// Build a gist-compatible flat item map from the given label ids: only items
-// tagged with one of those labels are included, keyed by identifier.
+// Flat item map (only items tagged with the given labels), keys = identifier.
 function buildFlatItems(labelIds) {
     const labelSet = new Set(labelIds);
     const items = {};
     for (const [id, entry] of Object.entries(state.items)) {
         const cur = entry && entry.labels && entry.labels[0] && entry.labels[0].labelId;
         if (!cur || !labelSet.has(cur)) continue;
-        // Mark as gist-source: this file is meant to be shared/consumed as a gist,
-        // so its entries should be treated as gist-origin when re-imported.
+        // Mark as gist-source so re-import treats these as gist origin.
         items[id] = {
             labels: entry.labels.map(l => ({ labelId: l.labelId, source: 'gist' }))
         };
@@ -675,10 +723,8 @@ function buildFlatItems(labelIds) {
     return items;
 }
 
-// Build a gist-compatible database from the given label ids: label metadata
-// (name + color) plus only the items tagged with one of those labels, keyed by
-// identifier. This is the format gist subscriptions consume (see parseGistDatabase),
-// so an export can be uploaded to a gist and shared — colors travel with it.
+// Gist-compatible export (label name + color + items) — the format gist
+// subscriptions consume, so colors travel with a shared export.
 function buildGistExport(labelIds) {
     const labelSet = new Set(labelIds);
     const labels = {};
@@ -690,7 +736,7 @@ function buildGistExport(labelIds) {
     return { labels, items };
 }
 
-// Build the full export payload (labels + items) from the given label ids.
+// Full export payload (labels + items).
 function buildFullPayload(labelIds) {
     const labelSet = new Set(labelIds);
     const labels = state.labels.filter(l => labelSet.has(l.id));
@@ -706,8 +752,7 @@ document.getElementById('export-check-none').addEventListener('click', () => {
     document.querySelectorAll('#export-label-list input[type=checkbox]').forEach(cb => cb.checked = false);
 });
 
-// "Export selected" writes a gist-compatible database (label colors + items) so
-// it can be uploaded to a gist and shared/subscribed by others.
+// "Export selected" writes a shareable gist-compatible database (with colors).
 document.getElementById('export').addEventListener('click', async () => {
     await getState();
     const ids = selectedExportLabelIds();
@@ -718,8 +763,7 @@ document.getElementById('export').addEventListener('click', async () => {
     flashAction('Exported ' + count + (count === 1 ? ' item' : ' items') + ' with colors for: ' + ids.join(', '));
 });
 
-// "Export everything" writes the full wrapper (labels + items) for a full local
-// backup / restore via the Import button.
+// "Export everything" writes the full wrapper for backup/restore.
 document.getElementById('export-all').addEventListener('click', async () => {
     await getState();
     const payload = buildFullPayload(state.labels.map(l => l.id));
@@ -739,7 +783,7 @@ document.getElementById('import').addEventListener('click', () => {
         let data;
         try { data = JSON.parse(text); } catch (e) { return alert('Invalid JSON'); }
 
-        // Full database wrapper (exported via "Export everything").
+        // Full database wrapper (from "Export everything").
         if (data && data.name === 'owlEyes database' && data.labels && data.items) {
             if (confirm('Replace the entire local database with this file?')) {
                 await send('importFull', { labels: data.labels, items: data.items });
@@ -748,10 +792,9 @@ document.getElementById('import').addEventListener('click', () => {
             return;
         }
 
-        // Anything else is treated as a gist-compatible flat item map
-        // {"id": "labelId"} or {"id": {labels:[...]}}. We do NOT gate on the
-        // absence of an "items"/"labels" key, since a flat map could legitimately
-        // contain such an identifier.
+        // Otherwise treat it as a gist-compatible flat item map ({"id": "labelId"} or
+        // {"id": {labels:[...]}}); a flat map may legitimately contain an
+        // "items"/"labels" identifier, so don't gate on that key's absence.
         const res = await send('importItems', { items: data });
         if (res && res.ok) {
             await Promise.all([renderLabels(), renderItems(), renderDatabasesRow(), renderDbControls(), renderUploads(), renderUploadControls()]);
@@ -765,5 +808,5 @@ document.getElementById('import').addEventListener('click', () => {
 // ---- Initial render -----------------------------------------------------
 
 (async function init() {
-    await Promise.all([renderLabels(), renderItems(), renderGists(), renderDbControls(), renderExportLabels(), renderUploads(), renderUploadControls()]);
+    await Promise.all([renderLabels(), renderItems(), renderGists(), renderDbControls(), renderExportLabels(), renderUploads(), renderUploadControls(), renderIgnored()]);
 })();

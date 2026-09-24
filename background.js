@@ -1,12 +1,8 @@
-// owlEyes background service worker
-// Handles storage of the local database, GitHub gist subscriptions,
-// and messaging between popup/options/content scripts.
+// owlEyes background service worker (storage, gist sync, messaging).
 
 importScripts('browser-polyfill.js');
 
-// Safety net: if the polyfill did not manage to expose `browser` (which would
-// otherwise abort worker load and fail registration), fall back to a minimal
-// promise wrapper over the native `chrome` API for the namespaces we use.
+// Fall back to a minimal promise wrapper over `chrome` if the polyfill failed.
 if (typeof browser === 'undefined' && typeof chrome === 'object') {
     const wrap = (obj) => {
         const out = {};
@@ -28,8 +24,7 @@ if (typeof browser === 'undefined' && typeof chrome === 'object') {
     try { globalThis.browser = wrap(chrome); } catch (e) {}
 }
 
-// Register an event listener only if the API exists, so a missing or partially
-// initialized API never crashes the worker at load time. Returns true on success.
+// Register a listener only if the API exists. Returns true on success.
 function safeAdd(parentName, eventName, fn) {
     try {
         const parent = parentName ? browser[parentName] : browser;
@@ -46,10 +41,7 @@ function safeAdd(parentName, eventName, fn) {
     return false;
 }
 
-// Serialize state-mutating work so overlapping async messages (popup writes,
-// options imports, alarm syncs) can't interleave and lose each other's updates.
-// `fn` is enqueued behind all prior mutations and its returned value/promise is
-// passed through to the caller.
+// Queue mutations so overlapping async messages can't interleave.
 let mutationQueue = Promise.resolve();
 function serialize(fn) {
     const run = mutationQueue.then(fn, fn);
@@ -57,9 +49,7 @@ function serialize(fn) {
     return run;
 }
 
-// ---- Diagnostic logging (persisted to storage so it can be read from the
-//      inspectable options page, since service-worker console is not accessible
-//      in some setups). ------------------------------------------------
+// ---- Diagnostic logging (persisted for the inspectable options page) ----
 async function debugLog(msg) {
     try {
         const { __debug__ } = await browser.storage.local.get({ __debug__: [] });
@@ -76,11 +66,12 @@ const DEFAULT_SUBSCRIPTIONS = [];
 function defaultState() {
     return {
         labels: DEFAULT_LABELS,
-        items: {},   // identifier -> { labels: [{labelId, source}], }
+        items: {},            // identifier -> { labels: [{labelId, source}] }
         subscriptions: DEFAULT_SUBSCRIPTIONS,
-        uploads: [], // label-groups pushed to gists on change
-        token: '',   // GitHub personal access token used for uploads
-        disabledHosts: [],   // hostnames where content script is disabled
+        uploads: [],          // label-groups pushed to gists on change
+        token: '',            // GitHub personal access token used for uploads
+        disabledHosts: [],    // hostnames where content script is disabled
+        ignoredItems: [],     // identifiers never re-added by gist sync
         syncEnabled: true,
         enabled: true
     };
@@ -88,10 +79,7 @@ function defaultState() {
 
 async function getState() {
     const d = defaultState();
-    // NOTE: passing an object to storage.local.get treats values as DEFAULTS.
-    // We must pass real typed defaults (not key-name strings), otherwise a
-    // missing key returns the string default (e.g. items -> "items") which
-    // breaks every subsequent mutation.
+    // Passing typed defaults (not key-name strings) so missing keys return them.
     const got = await browser.storage.local.get({
         labels: d.labels,
         items: d.items,                     // {} object
@@ -99,11 +87,11 @@ async function getState() {
         uploads: d.uploads,                 // [] array
         token: d.token,                     // '' string
         disabledHosts: d.disabledHosts,     // [] array
+        ignoredItems: d.ignoredItems,       // [] array
         syncEnabled: true,
         enabled: true
     });
-    // Normalize the type of each field regardless of what was stored.
-    // This heals any previously-corrupted storage (e.g. items stored as a string).
+    // Normalize field types to heal previously-corrupted storage.
     const state = {
         labels: Array.isArray(got.labels) ? got.labels : [],
         items: (got.items && typeof got.items === 'object' && !Array.isArray(got.items)) ? got.items : {},
@@ -111,26 +99,24 @@ async function getState() {
         uploads: Array.isArray(got.uploads) ? got.uploads : [],
         token: typeof got.token === 'string' ? got.token : '',
         disabledHosts: Array.isArray(got.disabledHosts) ? got.disabledHosts : [],
+        ignoredItems: Array.isArray(got.ignoredItems) ? got.ignoredItems : [],
         syncEnabled: typeof got.syncEnabled === 'boolean' ? got.syncEnabled : true,
         enabled: typeof got.enabled === 'boolean' ? got.enabled : true
     };
     if (sanitizeState(state)) {
-        // Persist the cleanup so corrupt data is actually removed from storage.
-        await saveState(state);
+        await saveState(state); // persist the cleanup
     }
     return state;
 }
 
-// Returns a real, usable label id string or null if the value is bogus
-// (undefined, null, empty, or the literal string "undefined").
+// Returns a usable label id, or null if it's empty/"undefined".
 function validLabelId(value) {
     return (typeof value === 'string' && value.trim() !== '' && value !== 'undefined')
         ? value
         : null;
 }
 
-// Remove corrupt "undefined"-style labels and any items that reference them.
-// Returns true if anything was changed.
+// Drop corrupt labels and items referencing them. Returns true if changed.
 function sanitizeState(state) {
     let changed = false;
     const cleanLabels = [];
@@ -138,7 +124,7 @@ function sanitizeState(state) {
     for (const label of state.labels) {
         const id = validLabelId(label && label.id);
         if (!id) { changed = true; continue; }
-        // Repair the display name: never show "undefined".
+        // Never show "undefined" as a display name.
         const name = (typeof label.name === 'string' && label.name.trim() !== '' && label.name !== 'undefined')
             ? label.name
             : id;
@@ -155,9 +141,7 @@ function sanitizeState(state) {
         if (!key) continue;
         if (key !== normalizeKey(id)) changed = true;   // Bluesky key migration
         const existing = cleanedItems[key];
-        // If we already saw this key under different casing, keep the first and
-        // don't create a duplicate. Prefer an entry with a local (user-owned)
-        // label when one exists among the variants.
+        // Dedupe by canonical key, preferring any variant with a local label.
         if (existing) {
             const bothLocal = existing.labels && existing.labels[0] && existing.labels[0].source === 'local';
             const thisLocal = entry && entry.labels && entry.labels[0] && entry.labels[0].source === 'local';
@@ -176,6 +160,20 @@ function sanitizeState(state) {
     }
     if (Object.keys(cleanedItems).length !== Object.keys(state.items).length) changed = true;
     state.items = cleanedItems;
+
+    const cleanedIgnored = [];
+    const ignoredSeen = new Set();
+    for (const raw of (state.ignoredItems || [])) {
+        const key = canonicalKey(raw);
+        if (key && !ignoredSeen.has(key)) {
+            ignoredSeen.add(key);
+            cleanedIgnored.push(key);
+        } else {
+            changed = true;
+        }
+    }
+    if (cleanedIgnored.length !== (state.ignoredItems || []).length) changed = true;
+    state.ignoredItems = cleanedIgnored;
     return changed;
 }
 
@@ -187,6 +185,7 @@ async function saveState(state) {
         uploads: state.uploads,
         token: state.token,
         disabledHosts: state.disabledHosts,
+        ignoredItems: state.ignoredItems,
         syncEnabled: state.syncEnabled,
         enabled: state.enabled
     });
@@ -195,9 +194,7 @@ async function saveState(state) {
 
 // ---- Gist fetching ------------------------------------------------------
 
-// Normalize a subscription URL (trim, compare case-insensitively, strip a
-// trailing slash) so the duplicate check is robust to superficial differences.
-// Returns the normalized URL string, or '' if it is unusable.
+// Normalize a subscription URL (trim, case-insensitive, no trailing slash).
 function normalizeGistUrl(url) {
     let u = String(url || '').trim();
     if (!u) return '';
@@ -208,14 +205,12 @@ function normalizeGistUrl(url) {
         parsed.pathname = parsed.pathname.replace(/\/+$/, '');
         u = parsed.href;
     } catch (e) {
-        // Not a parseable URL; fall back to lowercase trim for the dedup check.
-        return u.toLowerCase();
+        return u.toLowerCase(); // not a parseable URL
     }
     return u;
 }
 
-// Given a gist URL (e.g. https://gist.github.com/user/abcdef123...) or the
-// raw URL, resolve it to the raw URL of the first file and fetch its JSON.
+// Resolve a gist URL to its first file's raw URL and fetch that JSON.
 async function fetchGist(url) {
     let rawUrl = url.trim();
     const match = rawUrl.match(/gist\.github\.com\/[^/]+\/([0-9a-fA-F]+)/);
@@ -241,14 +236,13 @@ async function fetchGist(url) {
     return data;
 }
 
-// Parse the flat item map portion of a gist database. Accepts the
-// {"id": "labelId"} shorthand or {"id": {labels:[...]}} form.
+// Parse the flat item map: {"id": "labelId"} or {"id": {labels:[...]}}.
 function parseItemMap(data) {
     const out = {};
     for (const [id, entry] of Object.entries(data)) {
         if (!id || id === 'undefined') continue;
         if (typeof entry === 'string') {
-            // Allow {"foo": "labelId"} shorthand
+            // {"foo": "labelId"} shorthand
             const lid = validLabelId(entry);
             if (!lid) continue;
             out[id.toLowerCase()] = { labels: [{ labelId: lid, source: 'gist' }] };
@@ -262,16 +256,13 @@ function parseItemMap(data) {
     return out;
 }
 
-// Parse a raw gist/file payload into { items, labelMeta } where labelMeta maps
-// label id -> { name, color }. Two formats are understood:
-//   * wrapper:  { "labels": {id: {name,color}} | [...], "items": {...} }
-//   * legacy:   a flat item map, as above (no color metadata)
+// Parse a payload into { items, labelMeta }. Supports the wrapper
+// {"labels": {...}, "items": {...}} or a legacy flat item map.
 function parseGistDatabase(data) {
     const labelMeta = {};
     if (!data || typeof data !== 'object') throw new Error('Invalid database format');
 
-    // Wrapper format (new). "items" must be a plain object to be the wrapper;
-    // a legacy flat map keyed by identifier strings falls through to parseItemMap.
+    // Wrapper has "items" as a plain object; a flat map falls through below.
     const isWrapper = data.items && typeof data.items === 'object' && !Array.isArray(data.items);
     const itemSource = isWrapper ? data.items : data;
 
@@ -303,17 +294,12 @@ function parseGistDatabase(data) {
     return { items: parseItemMap(itemSource), labelMeta };
 }
 
-// Canonical form of an item identifier key. Storage lookups and merges must
-// use this so that "twitter.com/Foo" and "twitter.com/foo" are the same item
-// (gist import lowercases keys; local tagging may not).
+// Canonical lowercase item key so case variants match one item.
 function normalizeKey(id) {
     return (typeof id === 'string' ? id.trim().toLowerCase() : '');
 }
 
-// Canonical identifier key mirroring resolveIdentifier: Bluesky profile ids
-// include the "/profile/" segment (bsky.app/handle -> bsky.app/profile/handle),
-// matching the URL structure. This also migrates the old wrong keys so they
-// don't duplicate the corrected ones.
+// Identifier key matching resolveIdentifier's Bluesky form, migrating old keys.
 function canonicalKey(id) {
     const key = normalizeKey(id);
     const PREFIX = 'bsky.app/';
@@ -323,18 +309,15 @@ function canonicalKey(id) {
     return key;
 }
 
-// Merge gist data into the local database. Gist entries do not overwrite
-// local entries; they only add identifiers that don't already exist locally.
-// Keys are normalized to their lowercase form so case variants can't create
-// duplicate items.
-function mergeIntoLocal(localItems, gistData) {
+// Merge gist items into local, only adding new identifiers (minus ignored
+// ones); existing entries are never overwritten.
+function mergeIntoLocal(localItems, gistData, ignoreKeys) {
     let added = 0;
     for (const [id, entry] of Object.entries(gistData)) {
         const key = canonicalKey(id);
         if (!key) continue;
-        // Exact match is the common case (stored keys are canonicalized by
-        // sanitizeState). Also guard against any legacy mixed-case keys so a
-        // gist's lowercase variant can never create a duplicate.
+        if (ignoreKeys && ignoreKeys.has(key)) continue;
+        // Skip existing keys, including any legacy mixed-case variants.
         if (Object.prototype.hasOwnProperty.call(localItems, key)) continue;
         const exists = Object.keys(localItems).some(k => canonicalKey(k) === key);
         if (exists) continue;
@@ -344,7 +327,7 @@ function mergeIntoLocal(localItems, gistData) {
     return added;
 }
 
-// Collect all label ids referenced by gist data so we can auto-add labels.
+// All label ids referenced by gist items.
 function collectGistLabels(gistData) {
     const ids = new Set();
     for (const entry of Object.values(gistData)) {
@@ -362,10 +345,8 @@ async function refreshSubscription(sub, state) {
         const { items: gistData, labelMeta } = parseGistDatabase(data);
         const labelIds = collectGistLabels(gistData);
 
-        // Map each gist label id onto the canonical local label (case-insensitive).
-        // Without this, a gist that capitalizes labels differently from the local
-        // copy would create duplicate labels and leave item references pointing at
-        // a casing that never resolves to the local label (broken chips/colors).
+        // Map gist label ids onto canonical local ids (case-insensitive) so a gist
+        // can't create duplicate labels or dangling references.
         const canon = new Map();
         for (const lid of labelIds) {
             const existing = state.labels.find(l => l.id.toLowerCase() === lid.toLowerCase());
@@ -374,32 +355,23 @@ async function refreshSubscription(sub, state) {
 
         let changed = false;
 
-        // Auto-add any labels from the gist that are unknown locally, reusing the
-        // canonical id when a case-insensitive match already exists. Imported
-        // colors are adopted by default (existing labels keep their name but the
-        // gist's color wins, so shared/synced tag groups stay in sync).
+        // Add gist labels that are unknown locally; never touch existing local
+        // labels (local wins, same as the upload merge).
         for (const lid of labelIds) {
             const cid = canon.get(lid) || lid;
             const meta = labelMeta[lid] || {};
-            const existing = state.labels.find(l => l.id === cid);
-            if (existing) {
-                if (meta.color && existing.color !== meta.color) {
-                    existing.color = meta.color;
-                    changed = true;
-                }
-            } else {
-                state.labels.push({
-                    id: cid,
-                    name: meta.name || cid,
-                    color: meta.color || '#8b8b8b',
-                    visible: true,
-                    source: 'gist'
-                });
-                changed = true;
-            }
+            if (state.labels.some(l => l.id === cid)) continue;
+            state.labels.push({
+                id: cid,
+                name: meta.name || cid,
+                color: meta.color || '#8b8b8b',
+                visible: true,
+                source: 'gist'
+            });
+            changed = true;
         }
 
-        // Remap item labelId references to canonical casing before merging.
+        // Remap item label ids to canonical casing before merging.
         const remapped = {};
         for (const [id, entry] of Object.entries(gistData)) {
             remapped[id] = {
@@ -410,7 +382,8 @@ async function refreshSubscription(sub, state) {
             };
         }
 
-        const added = mergeIntoLocal(state.items, remapped);
+        const ignoreKeys = new Set((state.ignoredItems || []).map(canonicalKey));
+        const added = mergeIntoLocal(state.items, remapped, ignoreKeys);
         if (added > 0 || changed) {
             await saveState(state);
         }
@@ -438,8 +411,7 @@ async function refreshAllSubscriptions(options) {
     return state;
 }
 
-// Add any labels referenced by local items that no longer exist (e.g. after
-// a gist introduces a label but it was removed). Used as a safety net.
+// Re-add labels referenced by items but missing locally (safety net).
 async function syncMissingLabels(state) {
     const known = new Set(state.labels.map(l => l.id));
     for (const entry of Object.values(state.items)) {
@@ -455,17 +427,14 @@ async function syncMissingLabels(state) {
 
 // ---- Automatic gist uploads (push label-groups to gists on change) -------
 
-// Extract a gist id from a gist URL (user-prefixed or anonymous), or ''.
+// Extract a gist id from a gist URL, or ''.
 function extractGistId(url) {
     const m = String(url || '').match(/gist\.github\.com\/(?:[^/]+\/)?([0-9a-fA-F]{7,32})/);
     return m ? m[1] : '';
 }
 
-// Build the gist database written for an export/upload from a set of label ids:
-// includes label name+color metadata plus the flat item map (only items whose
-// currently applied first label is in the set). The format is consumed by
-// parseGistDatabase, so an upload can be re-subscribed by anyone — and now the
-// colors travel with it.
+// Build a gist database payload (label colors + items with those labels) for
+// an upload/export, in the format parseGistDatabase consumes.
 function buildGistPayload(labelIds, state) {
     const labelSet = new Set(labelIds);
     const items = {};
@@ -484,8 +453,7 @@ function buildGistPayload(labelIds, state) {
     return { labels, items };
 }
 
-// Deterministic stringification so equivalent payloads always hash the same
-// regardless of object key insertion order (which depends on tagging history).
+// Deterministic stringification so equivalent payloads hash equally.
 function canonicalJson(value) {
     if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
     if (value && typeof value === 'object') {
@@ -495,7 +463,7 @@ function canonicalJson(value) {
     return JSON.stringify(value);
 }
 
-// Cheap content digest used only to detect "did the tag group change?".
+// Cheap digest to detect "did the tag group change?".
 function computeHash(payload) {
     const str = canonicalJson(payload);
     let h = 0x811C9DC5;
@@ -506,10 +474,7 @@ function computeHash(payload) {
     return (h >>> 0).toString(16);
 }
 
-// Minuscule merge: union of two { labels, items } payloads. `gist` is what is
-// already in the gist; `local` is the current tag group. Local wins conflicts
-// (current color/label), but gist-only entries are preserved — pushes never
-// delete content, they only add/update.
+// Union of two payloads; local wins, gist-only entries preserved (additive).
 function mergeGistPayload(gistPayload, localPayload) {
     return {
         labels: Object.assign({}, gistPayload.labels, localPayload.labels),
@@ -517,11 +482,9 @@ function mergeGistPayload(gistPayload, localPayload) {
     };
 }
 
-// Upload a single upload's file on GitHub. Strictly additive: the gist's current
-// content is read first and merged under the local tag group, so removing or
-// re-tagging an item locally never removes it from the gist. Returns
-// { ok, at, error?, hash?, changed? } where hash is the merged payload hash and
-// changed is false when nothing new would be written.
+// Push one upload. Additive: reads the gist's current content and merges, so
+// re-tagging/removing locally never deletes gist entries. Returns
+// { ok, at, error?, hash?, changed? } on the merged payload.
 async function pushUpload(upload, state, localPayload) {
     try {
         const gistId = extractGistId(upload.url);
@@ -537,7 +500,7 @@ async function pushUpload(upload, state, localPayload) {
             'User-Agent': 'owlEyes'
         };
 
-        // Read what is currently in the gist so we can append instead of replace.
+        // Read what's currently in the gist so we can append rather than replace.
         const gres = await fetch(apiUrl, { headers });
         if (!gres.ok) throw new Error('Could not read gist: GitHub API returned ' + gres.status);
         const gist = await gres.json().catch(() => null);
@@ -578,8 +541,7 @@ async function pushUpload(upload, state, localPayload) {
     }
 }
 
-// Push uploads whose tag group changed since their last successful push (or force
-// all enabled uploads). Only touches upload metadata fields; returns a summary.
+// Push uploads whose tag group changed since the last success (or force all).
 async function pushUploads(state, opts) {
     opts = opts || {};
     const force = !!opts.force;
@@ -591,8 +553,7 @@ async function pushUploads(state, opts) {
         if (uploadId && upload.id !== uploadId) continue;
         const localPayload = buildGistPayload(upload.labels || [], state);
         const localHash = computeHash(localPayload);
-        // Fast path: the tag group hasn't changed since the last successful push,
-        // so there is nothing new to add to the gist.
+        // Skip if the group is unchanged since the last push.
         if (!force && localHash === upload.lastLocalHash) continue;
         const res = await pushUpload(upload, state, localPayload);
         if (res.ok) {
@@ -601,7 +562,7 @@ async function pushUploads(state, opts) {
             upload.lastError = null;
             if (res.changed) pushed++;
         } else {
-            // Keep hashes stale so the next change (or periodic retry) tries again.
+            // Keep hashes stale so the next change/retry attempts again.
             upload.lastError = res.error;
             errors++;
         }
@@ -630,15 +591,10 @@ async function pushAllUploads() {
     return pushUploads(state, { force: true });
 }
 
-// Records that a mutation may have changed an upload's payload and ensures a
-// push check runs afterwards. Debounced: many saveState calls collapse into one
-// work item, but the dirty flag survives so a mutation that lands while a push
-// (or its network call) is in flight still triggers a follow-up check.
+// Ensure a push check runs after any mutation. Debounced and dirty-flagged.
 let pushDirty = false;
 let pushRunning = false;
-// While true, saveState skips schedulePushCheck so pushUploads persisting its
-// own metadata can't cause an immediate retry loop (a failed push must wait for
-// the next real mutation or the periodic alarm, not hammer the API).
+// While true, saveState skips schedulePushCheck (avoids a retry loop on failure).
 let suppressPushCheck = false;
 function schedulePushCheck() {
     pushDirty = true;
@@ -667,8 +623,7 @@ function queuePushCheck() {
 
 // ---- Context menus + social media identifier resolution ------------------
 
-// Map a clicked link URL to a canonical identifier so the same user is the
-// same entity everywhere, e.g. "reddit.com/user/foo" or "youtube.com/@handle".
+// Map a clicked link URL to a canonical identifier (same user = same entity).
 function resolveIdentifier(url) {
     let href;
     try {
@@ -681,7 +636,7 @@ function resolveIdentifier(url) {
     const segs = path.split('/').filter(Boolean).map(s => decodeURIComponent(s));
 
     const mk = (kind, id) => (id ? { identifier: `${kind}${id}` } : null);
-    // second-or-first: for URLs like host/<type>/<name>, return segs[1]; else segs[0].
+    // For URLs like host/<type>/<name>, use segs[1]; otherwise segs[0].
     const named = (prefix) => {
         const id = (segs[1] || segs[0] || '').replace(/^@/, '');
         return id ? mk(prefix, id) : null;
@@ -770,13 +725,10 @@ const CTX_TAG_PREFIX = 'owleyes-tag-';
 
 async function buildContextMenus(state) {
     debugLog('buildContextMenus called; labels=' + (state.labels || []).length);
-    // Only create items for labels with a real id (never "undefined").
+    // Only create items for labels with a real id.
     const validLabels = (state.labels || []).filter(l => validLabelId(l && l.id));
-    // Always clear leftover items from prior worker sessions — Chrome
-    // persists the tree across restarts, so recreating with the same
-    // ids without clearing would throw "already exists". NOTE: `browser`
-    // (the polyfill) is promise-based, so removeAll() returns a promise and
-    // does NOT run a callback — we must await it before creating.
+    // Must clear first — Chrome persists the tree across restarts and rejects
+    // reusing ids. The polyfill's removeAll returns a promise, so await it.
     try {
         await browser.contextMenus.removeAll();
         debugLog('removeAll complete; creating ' + (validLabels.length + 1) + ' items');
@@ -811,17 +763,15 @@ async function buildContextMenus(state) {
     }
 }
 
-// Return the applied label object for an identifier in the given state, or null.
+// Applied label object for an identifier, or null.
 function currentLabelFor(state, identifier) {
     const entry = state.items[normalizeKey(identifier)];
     if (!entry || !Array.isArray(entry.labels) || entry.labels.length === 0) return null;
     return state.labels.find(l => l.id === entry.labels[0].labelId) || null;
 }
 
-// NOTE: `contextMenus.onShown` is not available in this browser (Opera), so the
-// menu cannot know which link is right-clicked before it is shown. Items are
-// therefore titled "Toggle tag (name)" and the click handler (below) toggles
-// the tag on/off for the targeted link.
+// Note: onShown isn't available here (Opera), so the menu can't know which
+// link was right-clicked; the click handler toggles the tag on the target link.
 
 safeAdd('contextMenus', 'onClicked', (info, tab) => {
     return serialize(async () => {
@@ -837,7 +787,7 @@ safeAdd('contextMenus', 'onClicked', (info, tab) => {
                 const labelId = info.menuItemId.slice(CTX_TAG_PREFIX.length);
                 const current = currentLabelFor(state, id);
                 if (current && current.id === labelId) {
-                    // Toggling off the currently-applied label -> remove it.
+                    // Toggling off the applied label removes the item.
                     delete state.items[id];
                 } else {
                     state.items[id] = { labels: [{ labelId, source: 'local' }] };
@@ -897,6 +847,29 @@ async function handleMessage(message, sender) {
             state.items = {};
             await saveState(state);
             notifyContent('refresh');
+            return { ok: true };
+        }
+        case 'ignoreItem': {
+            // Remove the item locally and add it to the ignore list so gist
+            // syncs won't re-add it. The list is local-only (never exported).
+            const state = await getState();
+            const id = normalizeKey(message.identifier);
+            if (!id || id === 'undefined') return { ok: false, error: 'empty identifier' };
+            if (!state.ignoredItems) state.ignoredItems = [];
+            const already = state.ignoredItems.includes(id);
+            if (!already) state.ignoredItems.push(id);
+            delete state.items[id];
+            await saveState(state);
+            notifyContent('refresh');
+            return { ok: true, ignored: !already };
+        }
+        case 'unignoreItem': {
+            // Drop an identifier from the ignore list so a future gist sync
+            // (or manual re-add) can bring it back.
+            const state = await getState();
+            const id = normalizeKey(message.identifier);
+            state.ignoredItems = (state.ignoredItems || []).filter(x => x !== id);
+            await saveState(state);
             return { ok: true };
         }
         case 'addLabel': {
@@ -972,7 +945,7 @@ async function handleMessage(message, sender) {
             sub.enabled = !!message.enabled;
             await saveState(state);
             if (sub.enabled) {
-                // Turning a gist back on immediately syncs it.
+                // Re-enabling a gist syncs it immediately.
                 const result = await refreshSubscription(sub, state);
                 sub.lastSync = result.at;
                 sub.lastError = result.lastError;
@@ -1016,10 +989,8 @@ async function handleMessage(message, sender) {
                 lastError: null
             };
             state.uploads.push(upload);
-            // Initialize the change-hashes WITHOUT pushing: setting up an upload
-            // must not clobber whatever is already in the gist. The first real
-            // change to the tag group pushes instead (which reads the existing
-            // gist content and merges, so pre-existing entries are preserved).
+            // Set change-hashes without pushing — setup must not clobber the
+            // gist; the first group change pushes (merging existing content).
             const localSnapshot = buildGistPayload(upload.labels || [], state);
             upload.lastHash = computeHash(localSnapshot);
             upload.lastLocalHash = upload.lastHash;
@@ -1065,8 +1036,7 @@ async function handleMessage(message, sender) {
         }
         case 'toggleHost': {
             const state = await getState();
-            // Normalize the same way the content script's hostname() does, so the
-            // stored value always matches what the page compares against.
+            // Normalize exactly as the content script's hostname() does.
             const host = String(message.host || '')
                 .trim().toLowerCase().replace(/^www\./, '').replace(/\/+$/, '');
             if (!host) return { ok: false, error: 'empty host' };
@@ -1113,9 +1083,7 @@ async function handleMessage(message, sender) {
             const state = await getState();
             state.labels = Array.isArray(message.labels) ? message.labels : state.labels;
             state.items = (message.items && typeof message.items === 'object' && !Array.isArray(message.items)) ? message.items : {};
-            // Re-run sanitization + key normalization so imported data satisfies
-            // the same invariants as everything else written to storage
-            // (lowercase/trimmed keys, valid label ids, no dangling refs).
+            // Sanitize so imported data obeys the same invariants as local data.
             sanitizeState(state);
             await saveState(state);
             buildContextMenus(state);
@@ -1123,9 +1091,7 @@ async function handleMessage(message, sender) {
             return { ok: true };
         }
         case 'importItems': {
-            // Merge a {"id": "labelId"} / {"id": {labels:[]}} map — or the newer
-            // {labels, items} wrapper that also carries colors — into the
-            // existing local items (does not overwrite locals).
+            // Merge a flat item map or {labels, items} wrapper into local items.
             const state = await getState();
             let gistData, labelMeta;
             try {
@@ -1136,7 +1102,7 @@ async function handleMessage(message, sender) {
                 return { ok: false, error: String(e && e.message || e) };
             }
             const labelIds = collectGistLabels(gistData);
-            // Case-insensitive so "SCAM" from a file maps onto a local "scam".
+            // Case-insensitive so "SCAM" maps onto a local "scam".
             for (const lid of labelIds) {
                 const meta = labelMeta[lid] || {};
                 const existing = state.labels.find(l => l.id.toLowerCase() === lid.toLowerCase());
@@ -1163,7 +1129,7 @@ function resolveLabels(entryLabels, allLabels) {
         .filter(Boolean);
 }
 
-// Notify content scripts in all open tabs to re-scan.
+// Tell content scripts in open tabs to re-scan.
 function notifyContent(message) {
     browser.tabs.query({}).then((tabs) => {
         for (const tab of tabs) {
@@ -1175,7 +1141,7 @@ function notifyContent(message) {
 }
 
 safeAdd('runtime', 'onMessage', (message, sender, sendResponse) => {
-    // Serialize so concurrent state-mutating messages can't race each other.
+    // Serialize so concurrent mutations can't race.
     serialize(() => handleMessage(message, sender))
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: String(err && err.message || err) }));
@@ -1198,15 +1164,14 @@ safeAdd('alarms', 'onAlarm', (alarm) => {
                 if (state.syncEnabled) {
                     await refreshAllSubscriptions({ includeMissingLabels: true });
                 }
-                // Also retry any uploads whose push failed or that changed while
-                // the worker was asleep.
+                // Retry uploads that failed or changed while the worker slept.
                 await pushChangedUploads();
             }
         } catch (e) {}
     });
 });
 
-// Refresh subscriptions once on startup, and build the context menu tree.
+// Refresh subscriptions and build the context menu on install.
 safeAdd('runtime', 'onInstalled', () => {
     return serialize(async () => {
         debugLog('onInstalled fired');
@@ -1225,8 +1190,7 @@ safeAdd('runtime', 'onInstalled', () => {
     });
 });
 
-// Also (re)build the context menu whenever the service worker starts. MV3
-// workers are terminated and restarted frequently; onInstalled only fires on
-// install/update, so rebuilding here guarantees the menu is always present.
+// Rebuild the context menu on worker start: MV3 wakes are frequent and
+// onInstalled only fires on install/update, so this keeps the menu present.
 debugLog('worker started');
 getState().then(state => debugLog('got state; triggering build').then(() => buildContextMenus(state))).catch(e => debugLog('startup build failed: ' + (e && e.message || e)));
