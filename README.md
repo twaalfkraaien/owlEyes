@@ -18,6 +18,13 @@ Do I plan on editing or updating this? Probably never. It's a local first tool, 
 3. navigate to your browsers extensions menu. enable developer mode.
 4. click load unpacked. point it torwards the folder of the now unpacked extension
 
+## for firefox users
+
+1. click the cog
+2. click "debug addons"
+3. click "load temporary addon"
+4. double click the "manifest.json" in the unzipped folder you have
+
 done : )
 
 # Usage
