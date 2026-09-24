@@ -61,3 +61,9 @@ theres not many things i can think of that id love to see implemented, but also 
 ## also? weird psuedo disclaimer
 
 i didnt personally vet the code, i do kinda know the person who coded this somewhat dabbles in dealing with alot of AI stuff, though i did personally ask that they dont vibecode this entire thing for me, and try to just slap it all together, i didnt want it to be perfect anyways.
+
+# privacy policy
+
+apparently, i need this to put it on webstores to make it easier to install, badda bing, badda boom.
+
+[how private is this?](https://github.com/twaalfkraaien/owlEyes/blob/main/privacy.md)
