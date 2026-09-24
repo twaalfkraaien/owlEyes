@@ -20,6 +20,33 @@ Do I plan on editing or updating this? Probably never. It's a local first tool, 
 
 done : )
 
+# Usage
+
+you can use the extension one of two ways
+
+1. setting it up yourself
+
+upon installation you can go to the extensions settings, and create your own labels
+from there you can right click display names on twitter or bluesky (or take their profile links)
+
+2. drop in n subscribe
+
+after installing, you can simply subscribe to a friend or curators gist and automatically pull in an entire databse
+
+# Additional Setup
+
+1. provide a **Fine Grained** GitHub Token (with gist read/write permissions) and click save
+2. Add an name (this is purely visual!) , the link to your gist (secret gists work too!) and whatever you want your database file to actually be called
+3. Select all labels you want to be added to this specific upload/gist link
+4. done !
+
+every time you add label anything that corresponds to said upload will automatically get pushed to your gist now!
+
+you can *also* (RESPONSIBLY) share token credentials and this setup with others to create a community upload!
+upon synchronization (upward or downward) *only* merges, and respects your local changes first
+
+downward syncs can be ignored via the aptly named ignore button
+
 # personal biz.
 
 theres not many things i can think of that id love to see implemented, but also im not gonna beg the internet for free code, cause who am i? but, being a furry, theres probably better people out there who are REALLY good at this sorta stuff. im just an ideas guy, i cant claim to call the shots.
