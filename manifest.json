@@ -10,6 +10,7 @@
         "activeTab",
         "scripting"
     ],
+    "minimum_chrome_version": "121",
     "host_permissions": [
         "<all_urls>",
         "https://gist.githubusercontent.com/*",
